@@ -204,7 +204,7 @@ function canonical(v){if(Array.isArray(v))return '['+v.map(canonical).join(',')+
 function sameWorkspace(a,b){return canonical(a)===canonical(b)}
 function validWorkspace(v){return v&&v.version===1&&collections.every(k=>Array.isArray(v[k])&&v[k].length<=1000&&v[k].every(r=>r&&typeof r==='object'&&typeof r.id==='string'))}
 function readCloudMeta(id){try{const v=JSON.parse(localStorage.getItem(cloudMetaKey(id))||'null');return v&&Number.isSafeInteger(v.revision)&&v.revision>=0&&typeof v.dirty==='boolean'?v:null}catch{return null}}
-function saveCloudMeta(){if(!ownerId||cloud.owner!==ownerId)return;try{localStorage.setItem(cloudMetaKey(ownerId),JSON.stringify({revision:cloud.revision,dirty:cloud.dirty}))}catch{}}
+function saveCloudMeta(){if(!ownerId||cloud.owner!==ownerId||storageStale)return;try{localStorage.setItem(cloudMetaKey(ownerId),JSON.stringify({revision:cloud.revision,dirty:cloud.dirty}))}catch{}}
 function resetCloud(){cloud.generation++;clearTimeout(cloud.timer);cloud.timer=null;cloud.owner=null;cloud.phase='idle';cloud.revision=0;cloud.dirty=false;cloud.busy=false;cloud.inflight=null;cloud.remote=null;cloud.lastSync=null}
 function cloudActive(id,generation){return ownerId===id&&cloud.owner===id&&cloud.generation===generation}
 async function cloudRequest(query){let timer;try{return await Promise.race([query,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('La conexión tardó demasiado.')),20000)})])}finally{clearTimeout(timer)}}
@@ -220,14 +220,14 @@ function updateStorageStatus(){
  const labels={idle:'Inicia sesión para conectar tu espacio.',loading:'Conectando con tu espacio privado en la nube…',ready:'Nube actualizada'+(cloud.lastSync?' · '+dateLabel(cloud.lastSync):''),saving:'Cambios guardados en este navegador · Sincronizando con la nube…',error:'Sincronización pendiente · Tus cambios locales se conservan.',conflict:'Hay cambios diferentes en la nube · Revisión necesaria.'};
  e.textContent=(cloud.dirty&&cloud.phase==='ready'?'Cambios pendientes de guardar en la nube…':labels[cloud.phase]||labels.idle)+(storageProblem?' · '+storageProblem:'');
  const actions=document.getElementById('cloud-actions');if(!actions)return;actions.replaceChildren();
- if(cloud.phase==='error')actions.append(btn('Reintentar conexión',()=>connectCloud(ownerId),'secondary'));
+ if(cloud.phase==='error')actions.append(storageStale?btn('Conservar copia y recargar',()=>{if(cloud.dirty&&!archiveLocal(ownerId)){notice('Descarga primero tus registros: no se pudo preservar otra copia.');return}location.reload()},'secondary'):btn('Reintentar conexión',()=>connectCloud(ownerId),'secondary'));
  if(cloud.phase==='conflict')actions.append(btn('Cargar versión de la nube',adoptRemote,'secondary'));
  if(cloud.error&&['error','conflict'].includes(cloud.phase))actions.append(element('p',cloud.error));
  if(ownerId){const recovery=latestRecovery(ownerId);if(recovery)actions.append(btn('Descargar copia local preservada',()=>{try{const raw=localStorage.getItem(recovery);if(raw)download('Emprendimiento-cambios-locales-'+today()+'.json',raw)}catch{notice('No se pudo leer la copia local.')}} ,'secondary'))}
 }
 function latestRecovery(id){try{const prefix='emprendimiento.recovery.v1:'+id+':';const matches=[];for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key?.startsWith(prefix))matches.push(key)}return matches.sort().pop()||null}catch{return null}}
 function archiveLocal(id){try{localStorage.setItem('emprendimiento.recovery.v1:'+id+':'+Date.now(),JSON.stringify(state));return true}catch{return false}}
-function writeConfirmedLocal(){storageProblem='';storageStale=false;try{lastSavedRaw=localStorage.getItem(workspaceKey(ownerId))}catch{lastSavedRaw=null}persistLocal();saveCloudMeta();updateStorageStatus()}
+function writeConfirmedLocal(){if(storageProblem.startsWith('Archivo local')){let previous;try{previous=localStorage.getItem(workspaceKey(ownerId))}catch{}if(previous){try{localStorage.setItem('emprendimiento.recovery.v1:'+ownerId+':'+Date.now(),previous)}catch{saveCloudMeta();updateStorageStatus();return}}}storageProblem='';storageStale=false;try{lastSavedRaw=localStorage.getItem(workspaceKey(ownerId))}catch{lastSavedRaw=null}persistLocal();saveCloudMeta();updateStorageStatus()}
 function adoptRemote(){
  if(cloud.phase!=='conflict'||!cloud.remote||!ownerId)return;
  if(!confirm('Se abrirá la versión de la nube. Tus cambios actuales quedarán preservados en una copia descargable en este navegador. ¿Continuar?'))return;
@@ -236,11 +236,13 @@ function adoptRemote(){
 }
 async function connectCloud(id){
  if(!id||ownerId!==id)return;
+ if(storageStale){cloud.phase='error';cloud.error='Otra pestaña cambió los registros. Conserva una copia y recarga antes de seguir.';updateStorageStatus();return}
  clearTimeout(cloud.timer);const generation=++cloud.generation,meta=readCloudMeta(id),wasDirty=meta?.dirty??hasRecords(state),baseRevision=meta?.revision??0;
  cloud.owner=id;cloud.phase='loading';cloud.busy=false;cloud.inflight=null;cloud.remote=null;cloud.error='';cloud.revision=baseRevision;cloud.dirty=wasDirty;updateStorageStatus();
  try{
   const access=await cloudRequest(client.from('emprendimiento_owner_access').select('user_id').eq('user_id',id).maybeSingle());if(!cloudActive(id,generation))return;if(access.error)throw access.error;if(!access.data)throw Error('Tu cuenta no tiene acceso a este espacio.');
   const result=await cloudRequest(client.from('emprendimiento_workspaces').select('payload,revision,updated_at').eq('owner_id',id).maybeSingle());if(!cloudActive(id,generation))return;if(result.error)throw result.error;
+  if(storageStale){cloud.phase='error';cloud.error='Otra pestaña cambió los registros. Conserva una copia y recarga.';updateStorageStatus();return}
   const remote=result.data;
   if(remote){
    if(!validWorkspace(remote.payload))throw Error('La estructura de los datos de la nube necesita revisión.');
@@ -257,6 +259,7 @@ async function connectCloud(id){
  }catch(error){if(!cloudActive(id,generation))return;cloud.phase='error';cloud.error='No se pudo completar la conexión. Revisa tu conexión e intenta nuevamente. Los registros del navegador no se han borrado.';saveCloudMeta();updateStorageStatus()}
 }
 function flushCloud(){
+ if(ownerId&&storageStale){if(cloud.dirty)archiveLocal(ownerId);cloud.phase='error';cloud.error='Otra pestaña cambió los registros. Se requiere recargar antes de sincronizar.';updateStorageStatus();return Promise.resolve()}
  if(cloud.busy)return cloud.inflight||Promise.resolve();
  if(!ownerId||cloud.owner!==ownerId||!cloud.dirty||!['ready','saving'].includes(cloud.phase))return Promise.resolve();
  const id=ownerId,generation=cloud.generation,revision=cloud.revision,snapshot=JSON.parse(JSON.stringify(state));
