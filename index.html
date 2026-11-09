@@ -247,7 +247,7 @@ async function connectCloud(id){
   if(remote){
    if(!validWorkspace(remote.payload))throw Error('La estructura de los datos de la nube necesita revisión.');
    if(wasDirty&&!sameWorkspace(state,remote.payload)){
-    if(baseRevision>0&&baseRevision===remote.revision){cloud.revision=remote.revision;cloud.phase='ready';cloud.dirty=true;saveCloudMeta();await flushCloud();return}
+    if((baseRevision>0&&baseRevision===remote.revision)||!hasRecords(remote.payload)){cloud.revision=remote.revision;cloud.phase='ready';cloud.dirty=true;saveCloudMeta();await flushCloud();return}
     cloud.remote=remote;cloud.phase='conflict';cloud.error='Los registros de este navegador se han conservado. Puedes descargar una copia o cargar la versión de la nube conservando tus cambios locales.';updateStorageStatus();return;
    }
    state=remote.payload;cloud.revision=remote.revision;cloud.dirty=false;cloud.phase='ready';cloud.lastSync=remote.updated_at;writeConfirmedLocal();routeOffice(false);return;
