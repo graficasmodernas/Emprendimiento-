@@ -199,22 +199,31 @@ function renderAgent(target,index){
  if(aiSession.error)empty(target,aiSession.error);
  const f=element('form',null,'work-form card'),label=element('label','¿Qué necesitas de esta oficina?'),task=element('textarea');task.id='ai-task';task.rows=5;task.maxLength=1500;task.required=true;task.value=aiSession.drafts[index]||'';label.htmlFor=task.id;label.className='full';task.className='full';task.oninput=()=>{aiSession.drafts[index]=task.value};
  const contextLabel=element('label',null,'compare-choice full'),context=element('input');context.type='checkbox';context.checked=Boolean(aiSession.includeContext[index]);context.onchange=()=>{aiSession.includeContext[index]=context.checked};contextLabel.append(context,element('span','Incluir datos pertinentes de esta oficina y memoria compartida. Se enviarán a OpenAI junto con mi tarea.'));
- const explanation=element('p','Cada consulta utiliza la API de OpenAI y puede consumir saldo. Límites iniciales: 3 por minuto, 20 al día y US$5 mensuales de estimación conservadora. Consultar un agente no autoriza enviar mensajes, publicar anuncios, confirmar pedidos ni realizar pagos.','full');
+ const explanation=element('p','Antes de consultar se busca una respuesta aprobada para esta misma pregunta sin datos del negocio. Si existe, se muestra sin gastar tokens. Una consulta nueva utiliza la API y puede consumir saldo. Límites iniciales: 3 por minuto, 20 al día y US$5 mensuales de estimación conservadora. Consultar un agente no autoriza enviar mensajes, publicar anuncios, confirmar pedidos ni realizar pagos.','full');
  const status=element('p',null,'form-feedback full');status.setAttribute('role','status');const submit=element('button',aiSession.busy?'Consulta en curso…':'Consultar a '+teamNames[index],'full');submit.type='submit';submit.disabled=!AI_BRIDGE_ENABLED||!aiSession.configured||aiSession.busy;
  f.append(label,task,contextLabel,explanation,status,submit);f.addEventListener('submit',async e=>{
  e.preventDefault();const prompt=task.value.trim();if(!prompt||prompt.length>1500||aiSession.busy)return;
  const owner=ownerId,session=aiSession;session.busy=true;submit.disabled=true;submit.textContent='Consultando…';status.textContent='Preparando la consulta. Puedes revisar las demás oficinas mientras llega la respuesta.';
  try{
   await flushCloud();if(cloud.dirty||!['ready','saving'].includes(cloud.phase))throw Error('Primero confirma el guardado de tus datos en la nube.');
-  const previous=session.pending[index],key=prompt+'|'+String(context.checked);const request=previous?.key===key?previous:{id:aiUUID(),key};session.pending[index]=request;
+  const basis=memoryBasis(context.checked),stamp=await memoryDigest(basis);if(ownerId!==owner||aiSession!==session)return;
+  const cached=memoryMatch(index,prompt,context.checked,stamp);
+  if(cached){session.reused={office:index,note:cached};session.error='';notice('Respuesta aprobada recuperada de memoria. Sin llamada a OpenAI: 0 tokens nuevos.');return}
+  session.reused=null;
+  const previous=session.pending[index],key=prompt+'|'+String(context.checked)+'|'+stamp;const request=previous?.key===key?previous:{id:aiUUID(),key};session.pending[index]=request;
   const result=await aiInvoke({action:'run',office:index,task:prompt,use_context:context.checked,request_id:request.id});if(ownerId!==owner||aiSession!==session)return;
-  const run=result.run;session.history[index]=[run,...(session.history[index]||[]).filter(r=>r.id!==run.id)].slice(0,20);session.historyLoaded[index]=true;if(['completed','incomplete'].includes(run.status))delete session.pending[index];session.error='';await refreshAIStatus(false);
+  const run=result.run;run.memory_stamp=stamp;run.memory_context=context.checked;run.memory_basis=basis;session.history[index]=[run,...(session.history[index]||[]).filter(r=>r.id!==run.id)].slice(0,20);session.historyLoaded[index]=true;if(['completed','incomplete'].includes(run.status))delete session.pending[index];session.error='';await refreshAIStatus(false);
  }catch(error){if(ownerId!==owner||aiSession!==session)return;session.error=error.message;notice(error.message)}finally{session.busy=false;if(ownerId===owner&&aiSession===session)routeOffice(false)}
  });target.append(f);
+ if(aiSession.reused?.office===index){const saved=card('Respuesta recuperada de memoria · 0 tokens nuevos');saved.append(element('p',aiSession.reused.note.ai_answer),element('p','Aprobada anteriormente por ti. Puedes retirar su aprobación desde Memoria.'));target.append(saved)}
  target.append(element('h3','Historial de consultas de esta oficina'),btn('Actualizar historial',()=>loadAIHistory(index),'secondary'));
  const runs=aiSession.history[index]||[];if(!runs.length)empty(target,AI_BRIDGE_ENABLED?'Todavía no hay consultas cargadas. Actualiza el historial para comprobarlo.':'Aún no se han realizado consultas desde esta conexión.');
  runs.forEach(r=>{const c=card(r.task);c.append(badge(runStatus(r)),element('p',r.model+' · '+dateLabel(r.created_at)),element('p',r.answer||'Sin texto de respuesta confirmado.'),element('p','Tokens de entrada: '+(r.input_tokens??'—')+' · Salida: '+(r.output_tokens??'—')+' · Estimación conservadora / reserva: US$'+Number(r.estimated_usd||0).toFixed(4)));
   if(r.error_code)c.append(element('p','Revisa el estado de conexión antes de repetir la consulta.'));
+  if(r.status==='completed'&&r.answer&&r.memory_stamp&&!r.memory_context){const approved=state.notes.some(n=>n.ai_reuse&&n.ai_run_id===r.id);const approve=btn(approved?'Respuesta aprobada para reutilizar':'Aprobar respuesta y reutilizar sin tokens',()=>{try{
+   if(r.memory_context&&memoryBasis(true)!==r.memory_basis)throw Error('Los datos cambiaron desde esta respuesta. Consulta de nuevo antes de aprobar su reutilización.');
+   record('notes',{name:teamNames[index]+' · '+r.task.slice(0,90),description:r.answer,office:index,ai_run_id:r.id,ai_reuse:true,ai_question:memoryQuestion(r.task),ai_context:r.memory_context,ai_stamp:r.memory_stamp,ai_answer:r.answer,ai_policy:'memory-v1'},index);routeOffice(false)
+  }catch(e){notice(e.message)}});approve.disabled=approved;c.append(approve)}
   if(r.answer){const saved=state.notes.some(n=>n.ai_run_id===r.id);const save=btn(saved?'Respuesta guardada en memoria':'Guardar respuesta en memoria',()=>{try{record('notes',{name:teamNames[index]+' · '+r.task.slice(0,90),description:'Respuesta de IA para revisión del dueño.\n\n'+r.answer,office:index,ai_run_id:r.id},index);routeOffice(false)}catch(e){notice(e.message)}});save.disabled=saved;c.append(save)}
   if(['uncertain','running','failed'].includes(r.status))c.append(btn('Preparar una nueva consulta',()=>{delete aiSession.pending[index];aiSession.drafts[index]=r.task;routeOffice(false);notice('La siguiente consulta tendrá un identificador nuevo y puede generar un nuevo consumo. Revisa antes el historial.');},'secondary'));
   target.append(c);
@@ -228,6 +237,48 @@ function renderUsage(target){
  table(target,['Agente','Modelo','Estado','Consultas','Estimación USD'],oficinas.map((o,i)=>[teamNames[i]+' · '+o.nombre,['gpt-6.1-sol','gpt-6.1-sol','gpt-6.1-terra','gpt-6-luna','gpt-6-luna','gpt-6.1-sol'][i],agentLabel(i),rows[i]?.calls??'—',rows[i]?'US$'+Number(rows[i].estimated_usd).toFixed(4):'—']),'Datos del registro privado de consultas. Las estimaciones incluyen reservas de respuestas no confirmadas y no sustituyen la factura de OpenAI.');
  empty(target,!AI_BRIDGE_ENABLED?'La conexión del servidor aún está pendiente de habilitar. No se han realizado llamadas a OpenAI desde esta implementación.':'Límite interno inicial: estimación conservadora de US$5 al mes, 20 consultas al día y 3 por minuto. El saldo y la facturación se gestionan en tu cuenta de la API de OpenAI.');
 }
+// Saved responses are reused only after explicit owner approval and an exact match.
+function memoryQuestion(value){return String(value||'').trim().replace(/\s+/g,' ')}
+function memoryBasis(useContext){
+ if(!useContext)return 'sin-contexto-v1';
+ return JSON.stringify(['products','campaigns','leads','orders','movements','approvals','tasks','incidents','notes'].map(k=>[k,state[k].filter(n=>k!=='notes'||!n.ai_reuse)]));
+}
+async function memoryDigest(value){const bytes=new TextEncoder().encode(value),digest=await crypto.subtle.digest('SHA-256',bytes);return Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('')}
+function memoryMatch(index,prompt,useContext,stamp){if(useContext)return undefined;return state.notes.find(n=>n.ai_reuse===true&&n.office===index&&n.ai_question===memoryQuestion(prompt)&&n.ai_context===useContext&&n.ai_stamp===stamp&&n.ai_answer&&n.ai_policy==='memory-v1')}
+function parseMemoryMarkdown(text,filename){
+ if(text.length>100000)throw Error('Cada archivo debe tener menos de 100.000 caracteres.');
+ return text.split('<!-- emprendimiento-note -->').map(part=>part.trim()).filter(Boolean).map(part=>{
+  const match=part.match(/^#\s+([^\n]+)\n+([\s\S]*)$/),name=(match?match[1]:filename.replace(/\.md$/i,'')).trim(),description=(match?match[2]:part).trim();
+  if(!name||name.length>160||!description||description.length>8000)throw Error('Usa títulos de hasta 160 caracteres y notas de hasta 8.000 caracteres.');
+  return {name,description};
+ });
+}
+function noteMarkdown(notes){return notes.map(n=>'<!-- emprendimiento-note -->\n# '+String(n.name).replace(/[\r\n]/g,' ')+'\n\n'+String(n.description||'')).join('\n\n')+'\n'}
+function renderMemory(target,index){
+ target.append(element('h2','Memoria compartida'),element('p','Notas sincronizadas entre tus oficinas. Al incluir contexto, el agente recibe solo fragmentos pertinentes. Las respuestas aprobadas pueden reutilizarse sin otra llamada a OpenAI. Las preguntas repetidas se comparan de forma exacta; por ahora la reutilización automática se aplica solo a consultas sin datos del negocio.'));
+ const obs=card('Notas compatibles con Obsidian');obs.append(element('p','Importa archivos .md de tu vault o exporta la memoria como Markdown. La importación es manual: no conecta ni sincroniza automáticamente la carpeta de tu computador. Las notas importadas no se aprueban como respuestas reutilizables.'));
+ const upload=element('input');upload.type='file';upload.accept='.md,text/markdown';upload.multiple=true;upload.setAttribute('aria-label','Seleccionar notas Markdown de Obsidian');
+ const feedback=element('p');feedback.setAttribute('role','status');
+ obs.append(upload,btn('Importar notas seleccionadas',async()=>{
+  try{
+   ensureWritable();const files=Array.from(upload.files||[]);if(!files.length||files.length>50)throw Error('Selecciona entre 1 y 50 archivos .md.');
+   if(files.some(f=>!f.name.toLowerCase().endsWith('.md'))||files.reduce((s,f)=>s+f.size,0)>500000)throw Error('Selecciona solo archivos .md; máximo 500 KB en total.');
+   const items=[];for(const file of files)items.push(...parseMemoryMarkdown(await file.text(),file.name));
+   const unique=items.filter((n,i)=>!state.notes.some(x=>x.name===n.name&&x.description===n.description)&&!items.slice(0,i).some(x=>x.name===n.name&&x.description===n.description));
+   if(state.notes.length+unique.length>1000)throw Error('La importación excede el límite de 1.000 notas.');
+   unique.forEach(n=>record('notes',{...n,office:index,source:'Markdown / Obsidian'},index));feedback.textContent=unique.length+' notas importadas. '+(items.length-unique.length)+' duplicadas omitidas.';upload.value='';list();
+  }catch(e){feedback.textContent=e.message}
+ },'secondary'),btn('Exportar memoria (.md)',()=>download('Emprendimiento-IA-memoria.md',noteMarkdown(state.notes),'text/markdown;charset=utf-8'),'secondary'),feedback);target.append(obs);
+ formUI(target,'Agregar conocimiento compartido',[['name','Título','text',{required:true,maxLength:160}],['description','Contenido y fuente','textarea',{required:true,maxLength:8000}]],d=>{record('notes',{...d,office:index},index);routeOffice(false)},{},'Guardar nota');
+ const search=element('input');search.type='search';search.placeholder='Buscar conocimiento o respuestas guardadas';search.setAttribute('aria-label',search.placeholder);target.append(search);const grid=element('div',null,'grid');target.append(grid);
+ function list(){grid.replaceChildren();const rows=state.notes.filter(n=>(n.name+' '+n.description).toLocaleLowerCase().includes(search.value.toLocaleLowerCase()));if(!rows.length)empty(grid,'No hay notas que coincidan.');rows.forEach(n=>{
+  const c=card(n.name,n.description);c.append(badge(oficinas[n.office]?.nombre||'Compartida'),element('p',dateLabel(n.createdAt)),btn('Exportar nota .md',()=>download('nota-'+n.id+'.md',noteMarkdown([n]),'text/markdown;charset=utf-8'),'secondary'));
+  if(n.ai_reuse)c.append(badge('Respuesta aprobada para reutilizar'),btn('Retirar aprobación de reutilización',()=>{try{updateRecord('notes',n.id,{ai_reuse:false},index);routeOffice(false)}catch(e){notice(e.message)}},'secondary'));
+  else if(!n.ai_run_id) c.append(btn('Editar conocimiento',()=>{const editor=element('div');c.append(editor);formUI(editor,'Actualizar nota',[['name','Título','text',{required:true,maxLength:160}],['description','Contenido y fuente','textarea',{required:true,maxLength:8000}]],d=>{updateRecord('notes',n.id,d,index);routeOffice(false)},n,'Guardar cambios')},'secondary'));
+  grid.append(c);
+ })}search.oninput=list;list();
+}
+
 officeTabs.forEach(t=>t.splice(t.length-1,0,['ia','Agente IA']));
 resetAI();
 
