@@ -280,9 +280,43 @@ function renderMemory(target,index){
  })}search.oninput=list;list();
 }
 
-// Local-only, session-scoped directory access. Never upload directory contents.
-let vaultSession=null;
-function vaultDisconnect(){if(vaultSession){clearTimeout(vaultSession.timer);vaultSession.active=false}vaultSession=null}
+// Local-only directory handles, stored per owner in IndexedDB. Never upload them.
+let vaultSession=null,vaultEpoch=0,vaultRestoring=null,vaultDatabase=null;
+function vaultDisconnect(){vaultEpoch++;if(vaultSession){clearTimeout(vaultSession.timer);vaultSession.active=false}vaultSession=null;vaultRestoring=null}
+function vaultDB(){
+ if(!window.indexedDB)return Promise.reject(Error('Este navegador no puede recordar la carpeta.'));
+ if(!vaultDatabase)vaultDatabase=new Promise((resolve,reject)=>{
+  const req=window.indexedDB.open('emprendimiento-local-vault',1);
+  req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains('folders'))req.result.createObjectStore('folders')};
+  req.onsuccess=()=>{const db=req.result;db.onversionchange=()=>{db.close();vaultDatabase=null};resolve(db)};
+  req.onerror=()=>reject(Error('No se pudo recordar la carpeta.'));
+  req.onblocked=()=>reject(Error('Cierra las otras pestañas para recordar la carpeta.'));
+ }).catch(e=>{vaultDatabase=null;throw e});
+ return vaultDatabase;
+}
+async function vaultRemember(id,value){
+ const db=await vaultDB();
+ return new Promise((resolve,reject)=>{
+  const mode=value===undefined?'readonly':'readwrite',tx=db.transaction('folders',mode),store=tx.objectStore('folders');
+  const req=value===undefined?store.get(id):value===null?store.delete(id):store.put(value,id);
+  tx.oncomplete=()=>resolve(req.result);tx.onerror=tx.onabort=()=>reject(Error('No se pudo recordar la carpeta.'));
+ });
+}
+function vaultStart(id,handle,message){const s={owner:id,handle,active:true,busy:false,again:false,saved:new Set(),message};vaultSession=s;vaultStatus(s,message);return s}
+async function vaultRestore(){
+ if(!ownerId||vaultActive(vaultSession)||!window.indexedDB||typeof window.showDirectoryPicker!=='function')return;
+ if(vaultRestoring)return vaultRestoring;
+ const id=ownerId,epoch=vaultEpoch;
+ const pending=(async()=>{
+  try{
+   const handle=await vaultRemember(id);if(ownerId!==id||epoch!==vaultEpoch||!handle)return;
+   const permission=await handle.queryPermission({mode:'readwrite'});if(ownerId!==id||epoch!==vaultEpoch)return;
+   const s=vaultStart(id,handle,'Carpeta recordada: '+handle.name+'. Pulsa Aceptar y conectar Obsidian para autorizar el guardado.');
+   if(permission==='granted')await vaultSync(s);
+  }catch{if(ownerId===id&&epoch===vaultEpoch)for(const node of document.querySelectorAll('[data-vault-status]'))node.textContent='No se pudo recuperar la carpeta. Pulsa Aceptar y conectar Obsidian para seleccionarla.'}
+ })();vaultRestoring=pending;
+ try{await pending}finally{if(vaultRestoring===pending)vaultRestoring=null}
+}
 function vaultActive(s){return s&&s.active&&vaultSession===s&&ownerId===s.owner}
 function vaultStatus(s,message){if(!vaultActive(s))return;s.message=message;for(const node of document.querySelectorAll('[data-vault-status]'))node.textContent=message}
 function vaultSchedule(){const s=vaultSession;if(!vaultActive(s))return;clearTimeout(s.timer);s.timer=setTimeout(()=>vaultSync(s),500)}
@@ -329,25 +363,33 @@ async function vaultSync(s=vaultSession){
  return s.pending;
 }
 function renderVault(target){
- const c=card('Guardar directamente en Obsidian');
+ const c=card('Conexión y guardado automático en Obsidian');
  c.append(element('p','Selecciona tu bóveda Empredimiento ia. Guardaremos las notas de Memoria y las respuestas que guardes en ella dentro de Oficinas IA. Cada cambio crea una versión; no se borran ni reemplazan tus notas. No consume tokens.'));
- c.append(element('p','Funciona mientras esta página esté abierta. Al recargarla debes volver a seleccionar la carpeta. Los cambios que hagas desde Obsidian se importan con el botón de importación manual.'));
+ c.append(element('p','¿Aceptas que esta página guarde tus notas en la carpeta de Obsidian? Recordaremos la carpeta en este navegador para reconectarla al iniciar sesión. Si el navegador pide permiso, elige permitir en cada visita cuando ofrezca esa opción.'));
+ c.append(element('p','Funciona mientras la página esté abierta. Los cambios que hagas desde Obsidian se importan manualmente. Puedes desconectar y olvidar la carpeta en cualquier momento.'));
  const status=element('p',vaultActive(vaultSession)?vaultSession.message:'Carpeta de Obsidian sin conectar.');status.setAttribute('data-vault-status','');status.setAttribute('role','status');c.append(status);
  if(typeof window.showDirectoryPicker!=='function'){c.append(element('p','Abre esta página en Edge o Chrome de escritorio para seleccionar una carpeta. Puedes seguir usando la exportación .md.'));target.append(c);return}
- const connect=btn('Conectar carpeta de Obsidian',async()=>{
+ const connect=btn('Aceptar y conectar Obsidian',async()=>{
   const id=ownerId;if(!id)return;
   connect.disabled=true;
   try{
-   const handle=await window.showDirectoryPicker({id:'emprendimiento-obsidian',mode:'readwrite',startIn:'downloads'});
+   const previous=vaultActive(vaultSession)?vaultSession:null;
+   const handle=previous?previous.handle:await window.showDirectoryPicker({id:'emprendimiento-obsidian',mode:'readwrite',startIn:'downloads'});
    if(ownerId!==id)return;
-   vaultDisconnect();const s={owner:id,handle,active:true,busy:false,again:false,saved:new Set(),message:'Guardando las notas en Obsidian…'};vaultSession=s;vaultStatus(s,s.message);await vaultSync(s);
+   if(previous&&await handle.requestPermission({mode:'readwrite'})!=='granted'){vaultStatus(previous,'Permiso no concedido. Pulsa Aceptar y conectar Obsidian cuando quieras autorizarlo.');return}
+   if(ownerId!==id)return;
+   vaultDisconnect();const s=vaultStart(id,handle,'Guardando las notas en Obsidian…');
+   let remembered=true;try{await vaultRemember(id,handle)}catch{remembered=false}
+   if(!vaultActive(s))return;await vaultSync(s);
+   if(!remembered&&vaultActive(s))vaultStatus(s,s.message+' No se pudo recordar la carpeta; tendrás que seleccionarla al volver.');
   }catch(e){status.textContent=e.name==='AbortError'?'Selección cancelada. Puedes volver a conectar la carpeta.':'No se pudo conectar. Permite el acceso a la carpeta y vuelve a intentarlo.'}finally{connect.disabled=false}
  },'secondary');
  c.append(connect,btn('Guardar ahora',async()=>{
-  const s=vaultSession;if(!vaultActive(s)){status.textContent='Primero pulsa Conectar carpeta de Obsidian.';return}
+  const s=vaultSession;if(!vaultActive(s)){status.textContent='Primero pulsa Aceptar y conectar Obsidian.';return}
   try{const permission=await s.handle.requestPermission({mode:'readwrite'});if(permission!=='granted'){vaultStatus(s,'Permiso de escritura no concedido. La memoria de la página se conserva.');return}await vaultSync(s)}catch{vaultStatus(s,'No se pudo guardar. Revisa el permiso y la carpeta.')}
- },'secondary'),btn('Desconectar carpeta',()=>{vaultDisconnect();status.textContent='Carpeta desconectada. Tus archivos se conservan.'},'secondary'));
+ },'secondary'),btn('Desconectar y olvidar carpeta',async()=>{const id=ownerId;vaultDisconnect();status.textContent='Desconectando y olvidando la carpeta…';try{await vaultRemember(id,null);if(ownerId===id)status.textContent='Carpeta olvidada. Tus archivos se conservan.'}catch{if(ownerId===id)status.textContent='Carpeta desconectada en esta sesión. No se pudo borrar el recuerdo del navegador; reintenta antes de cerrar.'}},'secondary'));
  target.append(c);
+ if(!vaultActive(vaultSession)&&ownerId&&cloud.owner===ownerId&&cloud.phase==='ready')void vaultRestore();
 }
 
 const LOCAL_OLLAMA='http://localhost:11434';
@@ -487,6 +529,7 @@ async function connectCloud(id){
   if(created.error){if(created.error.code==='23505'){cloud.phase='error';cloud.error='El espacio fue creado desde otro dispositivo. Pulsa Reintentar conexión.';updateStorageStatus();return}throw created.error}
   cloud.revision=created.data.revision;cloud.dirty=false;cloud.phase='ready';cloud.lastSync=created.data.updated_at;writeConfirmedLocal();routeOffice(false);notice('Tu espacio ya está conectado. Los registros de este navegador se conservaron en la nube.');
  }catch(error){if(!cloudActive(id,generation))return;cloud.phase='error';cloud.error='No se pudo completar la conexión. Revisa tu conexión e intenta nuevamente. Los registros del navegador no se han borrado.';saveCloudMeta();updateStorageStatus()}
+ finally{if(cloudActive(id,generation)&&cloud.phase==='ready')void vaultRestore()}
 }
 function flushCloud(){
  if(ownerId&&storageStale){if(cloud.dirty)archiveLocal(ownerId);cloud.phase='error';cloud.error='Otra pestaña cambió los registros. Se requiere recargar antes de sincronizar.';updateStorageStatus();return Promise.resolve()}
