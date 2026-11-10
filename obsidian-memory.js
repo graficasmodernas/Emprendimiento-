@@ -170,9 +170,33 @@
     await writeOnce(dir,filename,content);
     return {saved:true,filename,office:office.folder};
   }
+  async function migrateLegacyNotes(vault,ownerId,notes){
+    if(!await canWrite(vault))throw Error("Debes autorizar Obsidian antes de organizar las notas.");
+    const owner=validOwner(ownerId),dir=await ownFolder(vault,owner,false);
+    const backup=await dir.getDirectoryHandle("Respaldo de nombres anteriores",{create:true});
+    let migrated=0,skipped=0,examined=0;
+    for await(const [name,handle] of dir.entries()){
+      const match=name.match(/^nota-(.+)-([a-f0-9]{64})\.md$/i);
+      if(handle.kind!=="file"||!match)continue;
+      examined++;
+      if(examined>250){skipped++;continue;}
+      const known=(notes||[]).find(n=>String(n.id).replace(/[^a-zA-Z0-9_-]/g,"_").slice(0,100)===match[1]);
+      if(!known){skipped++;continue;}
+      const raw=await (await handle.getFile()).text();
+      // Primero se crea la versión con título legible y se verifica una copia recuperable.
+      await saveMemoryNote(vault,owner,known,raw);
+      const archiveName=name+".bak";
+      await writeOnce(backup,archiveName,raw);
+      if(await (await (await backup.getFileHandle(archiveName)).getFile()).text()!==raw)throw Error("No se pudo comprobar el respaldo de "+name);
+      if(typeof dir.removeEntry!=="function")throw Error("El navegador no permite archivar los nombres anteriores.");
+      await dir.removeEntry(name);
+      migrated++;
+    }
+    return {migrated,skipped};
+  }
   function graphGroups(ownerId){
     const owner=validOwner(ownerId);
     return OFFICES.map(o=>({...o,query:'path:"Oficinas IA/'+owner+'/'+o.folder+'/"'}));
   }
-  window.ObsidianContextBridge=Object.freeze({relevant,saveTurn,saveMemoryNote,ensureIndexes,graphGroups,titleFor});
+  window.ObsidianContextBridge=Object.freeze({relevant,saveTurn,saveMemoryNote,ensureIndexes,migrateLegacyNotes,graphGroups,titleFor});
 })();
