@@ -10,7 +10,9 @@ Al entrar en Emprendimiento IA desde Chrome/Edge, conectar Obsidian y autorizar 
    `<bóveda>/Oficinas IA/<id-de-usuario>/Conversaciones/`.
 2. Si la casilla **Incluir contexto** está marcada, antes de cada consulta la página lee solo las notas Markdown dentro de `Oficinas IA/<id-de-usuario>` (incluidas las conversaciones). Selecciona hasta 3 fragmentos relacionados con la pregunta, con un máximo de aproximadamente 3500 caracteres.
 3. La memoria guardada por la interfaz en **Memoria compartida** conserva su respaldo anterior en Obsidian y puede servir como referencia a Ollama.
-4. Si el permiso local de Obsidian está desconectado o revocado, el modelo puede seguir respondiendo pero la nueva conversación **no** queda automáticamente respaldada allí. La tarjeta de respuesta mostrará el estado del respaldo. Conserva también el botón manual **Guardar respuesta local en memoria**.
+4. Todas las conversaciones nuevas con Ollama se guardan **automáticamente** en Memoria compartida (sin un segundo clic) y se sincronizan con Supabase cuando esté disponible. Cuando Obsidian está autorizado, también se escribe una bitácora completa en la bóveda.
+5. Si la nube no permite guardar la nota, la respuesta ofrece **Reintentar guardar en memoria**. Si Obsidian no tiene permiso, mostrará el estado del respaldo sin detener la respuesta.
+6. El botón de cada agente ahora muestra únicamente **Consultar**.
 
 ## Privacidad y límites
 
