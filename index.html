@@ -256,6 +256,7 @@ function parseMemoryMarkdown(text,filename){
 function noteMarkdown(notes){return notes.map(n=>'<!-- emprendimiento-note -->\n# '+String(n.name).replace(/[\r\n]/g,' ')+'\n\n'+String(n.description||'')).join('\n\n')+'\n'}
 function renderMemory(target,index){
  target.append(element('h2','Memoria compartida'),element('p','Notas sincronizadas entre tus oficinas. Al incluir contexto, el agente recibe solo fragmentos pertinentes. Las respuestas aprobadas pueden reutilizarse sin otra llamada a OpenAI. Las preguntas repetidas se comparan de forma exacta; por ahora la reutilización automática se aplica solo a consultas sin datos del negocio.'));
+ renderVault(target);
  const obs=card('Notas compatibles con Obsidian');obs.append(element('p','Importa archivos .md de tu vault o exporta la memoria como Markdown. La importación es manual: no conecta ni sincroniza automáticamente la carpeta de tu computador. Las notas importadas no se aprueban como respuestas reutilizables.'));
  const upload=element('input');upload.type='file';upload.accept='.md,text/markdown';upload.multiple=true;upload.setAttribute('aria-label','Seleccionar notas Markdown de Obsidian');
  const feedback=element('p');feedback.setAttribute('role','status');
@@ -277,6 +278,76 @@ function renderMemory(target,index){
   else if(!n.ai_run_id) c.append(btn('Editar conocimiento',()=>{const editor=element('div');c.append(editor);formUI(editor,'Actualizar nota',[['name','Título','text',{required:true,maxLength:160}],['description','Contenido y fuente','textarea',{required:true,maxLength:8000}]],d=>{updateRecord('notes',n.id,d,index);routeOffice(false)},n,'Guardar cambios')},'secondary'));
   grid.append(c);
  })}search.oninput=list;list();
+}
+
+// Local-only, session-scoped directory access. Never upload directory contents.
+let vaultSession=null;
+function vaultDisconnect(){if(vaultSession){clearTimeout(vaultSession.timer);vaultSession.active=false}vaultSession=null}
+function vaultActive(s){return s&&s.active&&vaultSession===s&&ownerId===s.owner}
+function vaultStatus(s,message){if(!vaultActive(s))return;s.message=message;for(const node of document.querySelectorAll('[data-vault-status]'))node.textContent=message}
+function vaultSchedule(){const s=vaultSession;if(!vaultActive(s))return;clearTimeout(s.timer);s.timer=setTimeout(()=>vaultSync(s),500)}
+async function vaultSync(s=vaultSession){
+ if(!vaultActive(s))return;
+ if(s.busy){s.again=true;return s.pending}
+ s.busy=true;s.again=false;
+ s.pending=(async()=>{
+  try{
+   if(await s.handle.queryPermission({mode:'readwrite'})!=='granted')throw Error('Permiso pendiente. Pulsa Guardar ahora y permite el acceso.');
+   if(!vaultActive(s))return;
+   const notes=state.notes.map(n=>({...n}));
+   const root=await s.handle.getDirectoryHandle('Oficinas IA',{create:true});
+   if(!vaultActive(s))return;
+   const dir=await root.getDirectoryHandle(s.owner,{create:true});
+   let count=0;
+   for(const note of notes){
+    if(!vaultActive(s))return;
+    const text=noteMarkdown([note]);
+    const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
+    const digest=Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
+    const safeId=String(note.id).replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,100);
+    const name='nota-'+safeId+'-'+digest+'.md';
+    if(s.saved.has(name)){count++;continue}
+    if(!vaultActive(s))return;
+    let file,exists=true;
+    try{file=await dir.getFileHandle(name)}catch(e){if(e.name!=='NotFoundError')throw e;exists=false}
+    if(exists){
+     if(await (await file.getFile()).text()!==text)throw Error('Una copia fue editada en Obsidian. Se conserva sin sobrescribir. Reconecta otra carpeta o conserva esa nota con otro nombre y reintenta.');
+    }else{
+     if(!vaultActive(s))return;
+     file=await dir.getFileHandle(name,{create:true});
+     if(!vaultActive(s))return;
+     const writer=await file.createWritable();
+     try{if(!vaultActive(s)){await writer.abort();return}await writer.write(text);if(!vaultActive(s)){await writer.abort();return}await writer.close()}catch(e){try{await writer.abort()}catch{}throw e}
+    }
+    if(!vaultActive(s))return;
+    s.saved.add(name);count++;
+   }
+   vaultStatus(s,'Obsidian: '+count+' notas respaldadas en '+s.handle.name+' / Oficinas IA. Guardado automático activo en esta sesión.');
+  }catch(e){vaultStatus(s,'Guardado en Obsidian pendiente. '+(e.name==='NotAllowedError'?'Permite el acceso a la carpeta y pulsa Guardar ahora.':e.message||'Revisa que la carpeta esté disponible.')+' La memoria de la página se conserva.')}
+  finally{s.busy=false;if(s.again&&vaultActive(s))vaultSchedule()}
+ })();
+ return s.pending;
+}
+function renderVault(target){
+ const c=card('Guardar directamente en Obsidian');
+ c.append(element('p','Selecciona tu bóveda Empredimiento ia. Guardaremos las notas de Memoria y las respuestas que guardes en ella dentro de Oficinas IA. Cada cambio crea una versión; no se borran ni reemplazan tus notas. No consume tokens.'));
+ c.append(element('p','Funciona mientras esta página esté abierta. Al recargarla debes volver a seleccionar la carpeta. Los cambios que hagas desde Obsidian se importan con el botón de importación manual.'));
+ const status=element('p',vaultActive(vaultSession)?vaultSession.message:'Carpeta de Obsidian sin conectar.');status.setAttribute('data-vault-status','');status.setAttribute('role','status');c.append(status);
+ if(typeof window.showDirectoryPicker!=='function'){c.append(element('p','Abre esta página en Edge o Chrome de escritorio para seleccionar una carpeta. Puedes seguir usando la exportación .md.'));target.append(c);return}
+ const connect=btn('Conectar carpeta de Obsidian',async()=>{
+  const id=ownerId;if(!id)return;
+  connect.disabled=true;
+  try{
+   const handle=await window.showDirectoryPicker({id:'emprendimiento-obsidian',mode:'readwrite',startIn:'downloads'});
+   if(ownerId!==id)return;
+   vaultDisconnect();const s={owner:id,handle,active:true,busy:false,again:false,saved:new Set(),message:'Guardando las notas en Obsidian…'};vaultSession=s;vaultStatus(s,s.message);await vaultSync(s);
+  }catch(e){status.textContent=e.name==='AbortError'?'Selección cancelada. Puedes volver a conectar la carpeta.':'No se pudo conectar. Permite el acceso a la carpeta y vuelve a intentarlo.'}finally{connect.disabled=false}
+ },'secondary');
+ c.append(connect,btn('Guardar ahora',async()=>{
+  const s=vaultSession;if(!vaultActive(s)){status.textContent='Primero pulsa Conectar carpeta de Obsidian.';return}
+  try{const permission=await s.handle.requestPermission({mode:'readwrite'});if(permission!=='granted'){vaultStatus(s,'Permiso de escritura no concedido. La memoria de la página se conserva.');return}await vaultSync(s)}catch{vaultStatus(s,'No se pudo guardar. Revisa el permiso y la carpeta.')}
+ },'secondary'),btn('Desconectar carpeta',()=>{vaultDisconnect();status.textContent='Carpeta desconectada. Tus archivos se conservan.'},'secondary'));
+ target.append(c);
 }
 
 const LOCAL_OLLAMA='http://localhost:11434';
@@ -364,12 +435,12 @@ function sameWorkspace(a,b){return canonical(a)===canonical(b)}
 function validWorkspace(v){return v&&v.version===1&&collections.every(k=>Array.isArray(v[k])&&v[k].length<=1000&&v[k].every(r=>r&&typeof r==='object'&&typeof r.id==='string'))}
 function readCloudMeta(id){try{const v=JSON.parse(localStorage.getItem(cloudMetaKey(id))||'null');return v&&Number.isSafeInteger(v.revision)&&v.revision>=0&&typeof v.dirty==='boolean'?v:null}catch{return null}}
 function saveCloudMeta(){if(!ownerId||cloud.owner!==ownerId||storageStale)return;try{localStorage.setItem(cloudMetaKey(ownerId),JSON.stringify({revision:cloud.revision,dirty:cloud.dirty}))}catch{}}
-function resetCloud(){cloud.generation++;clearTimeout(cloud.timer);cloud.timer=null;cloud.owner=null;cloud.phase='idle';cloud.revision=0;cloud.dirty=false;cloud.busy=false;cloud.inflight=null;cloud.remote=null;cloud.lastSync=null}
+function resetCloud(){vaultDisconnect();cloud.generation++;clearTimeout(cloud.timer);cloud.timer=null;cloud.owner=null;cloud.phase='idle';cloud.revision=0;cloud.dirty=false;cloud.busy=false;cloud.inflight=null;cloud.remote=null;cloud.lastSync=null}
 function cloudActive(id,generation){return ownerId===id&&cloud.owner===id&&cloud.generation===generation}
 async function cloudRequest(query){let timer;try{return await Promise.race([query,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('La conexión tardó demasiado.')),20000)})])}finally{clearTimeout(timer)}}
 function persist(){
  if(!ownerId)return;
- cloud.dirty=true;saveCloudMeta();persistLocal();
+ cloud.dirty=true;saveCloudMeta();persistLocal();vaultSchedule();
  if(cloud.owner===ownerId&&['ready','saving'].includes(cloud.phase)){clearTimeout(cloud.timer);cloud.timer=setTimeout(()=>flushCloud(),350)}
  updateStorageStatus();
 }
