@@ -328,33 +328,19 @@ async function vaultSync(s=vaultSession){
   try{
    if(await s.handle.queryPermission({mode:'readwrite'})!=='granted')throw Error('Permiso pendiente. Pulsa Guardar ahora y permite el acceso.');
    if(!vaultActive(s))return;
+   if(!window.ObsidianContextBridge)throw Error('Falta cargar la integración de Obsidian.');
    const notes=state.notes.map(n=>({...n}));
-   const root=await s.handle.getDirectoryHandle('Oficinas IA',{create:true});
-   if(!vaultActive(s))return;
-   const dir=await root.getDirectoryHandle(s.owner,{create:true});
+   await window.ObsidianContextBridge.ensureIndexes(s.handle,s.owner);
    let count=0;
    for(const note of notes){
     if(!vaultActive(s))return;
-    const text=noteMarkdown([note]);
-    const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
-    const digest=Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
-    const safeId=String(note.id).replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,100);
-    const name='nota-'+safeId+'-'+digest+'.md';
-    if(s.saved.has(name)){count++;continue}
+    const md=noteMarkdown([note]);
+    const key=String(note.id)+'|'+String(note.updatedAt||'')+'|'+md.length;
+    if(s.saved.has(key)){count++;continue}
+    const saved=await window.ObsidianContextBridge.saveMemoryNote(s.handle,s.owner,note,md);
+    if(!saved.saved)throw Error(saved.reason||'No se pudo respaldar una nota.');
     if(!vaultActive(s))return;
-    let file,exists=true;
-    try{file=await dir.getFileHandle(name)}catch(e){if(e.name!=='NotFoundError')throw e;exists=false}
-    if(exists){
-     if(await (await file.getFile()).text()!==text)throw Error('Una copia fue editada en Obsidian. Se conserva sin sobrescribir. Reconecta otra carpeta o conserva esa nota con otro nombre y reintenta.');
-    }else{
-     if(!vaultActive(s))return;
-     file=await dir.getFileHandle(name,{create:true});
-     if(!vaultActive(s))return;
-     const writer=await file.createWritable();
-     try{if(!vaultActive(s)){await writer.abort();return}await writer.write(text);if(!vaultActive(s)){await writer.abort();return}await writer.close()}catch(e){try{await writer.abort()}catch{}throw e}
-    }
-    if(!vaultActive(s))return;
-    s.saved.add(name);count++;
+    s.saved.add(key);count++;
    }
    vaultStatus(s,'Obsidian: '+count+' notas respaldadas en '+s.handle.name+' / Oficinas IA. Guardado automático activo en esta sesión.');
   }catch(e){vaultStatus(s,'Guardado en Obsidian pendiente. '+(e.name==='NotAllowedError'?'Permite el acceso a la carpeta y pulsa Guardar ahora.':e.message||'Revisa que la carpeta esté disponible.')+' La memoria de la página se conserva.')}
@@ -405,6 +391,19 @@ function renderVault(target){
  c.append(element('p','Selecciona tu bóveda Empredimiento ia. Guardaremos las notas de Memoria y las respuestas que guardes en ella dentro de Oficinas IA. Cada cambio crea una versión; no se borran ni reemplazan tus notas. No consume tokens.'));
  c.append(element('p','¿Aceptas que esta página guarde tus notas en la carpeta de Obsidian? Recordaremos la carpeta en este navegador. Al iniciar sesión aparecerá un aviso para aceptar la conexión. Si el navegador pide permiso, elige permitir en cada visita cuando ofrezca esa opción.'));
  c.append(element('p','Funciona mientras la página esté abierta. Con Obsidian autorizado, las nuevas consultas a Ollama se respaldan como conversaciones locales. Al activar Incluir contexto, Ollama lee hasta tres fragmentos pertinentes de Oficinas IA. Los cambios hechos en Obsidian no se importan automáticamente a Supabase. Puedes desconectar la carpeta en cualquier momento.'));
+ c.append(element('p','Las conversaciones y notas nuevas se organizan por oficina, con títulos comprensibles y enlaces al mapa central. Las copias anteriores con nombres técnicos permanecen intactas por seguridad.'));
+ const graph=element('details');
+ graph.append(element('summary','Configurar los seis colores en la Vista gráfica de Obsidian'));
+ graph.append(element('p','En Obsidian, abre Vista gráfica → Ajustes → Grupos → Nuevo grupo. Usa una consulta de carpeta por oficina y el color indicado. Tus preferencias del gráfico no se modifican automáticamente.'));
+ if(ownerId&&window.ObsidianContextBridge){
+  window.ObsidianContextBridge.graphGroups(ownerId).forEach(item=>{
+   const line=element('p'),dot=element('span','● ');
+   dot.style.color=item.color;
+   line.append(dot,element('strong',item.folder+' ('+item.agent+') · '+item.color+' · '),element('code',item.query));
+   graph.append(line);
+  });
+ }
+ c.append(graph);
  const status=element('p',vaultActive(vaultSession)?vaultSession.message:'Carpeta de Obsidian sin conectar.');status.setAttribute('data-vault-status','');status.setAttribute('role','status');c.append(status);
  if(typeof window.showDirectoryPicker!=='function'){c.append(element('p','Abre esta página en Edge o Chrome de escritorio para seleccionar una carpeta. Puedes seguir usando la exportación .md.'));target.append(c);return}
  const connect=btn('Aceptar y conectar Obsidian',async()=>{connect.disabled=true;try{await vaultConnect(status)}finally{connect.disabled=false}},'secondary');
