@@ -411,6 +411,17 @@ function renderVault(target){
   const s=vaultSession;if(!vaultActive(s)){status.textContent='Primero pulsa Aceptar y conectar Obsidian.';return}
   try{const permission=await s.handle.requestPermission({mode:'readwrite'});if(permission!=='granted'){vaultStatus(s,'Permiso de escritura no concedido. La memoria de la página se conserva.');return}s.authorized=true;await vaultSync(s)}catch{vaultStatus(s,'No se pudo guardar. Revisa el permiso y la carpeta.')}
  },'secondary'),btn('Desconectar y olvidar carpeta',async()=>{const id=ownerId;vaultDisconnect();status.textContent='Desconectando y olvidando la carpeta…';try{await vaultRemember(id,null);if(ownerId===id)status.textContent='Carpeta olvidada. Tus archivos se conservan.'}catch{if(ownerId===id)status.textContent='Carpeta desconectada en esta sesión. No se pudo borrar el recuerdo del navegador; reintenta antes de cerrar.'}},'secondary'));
+ c.append(btn('Organizar nombres anteriores',async()=>{
+  const active=vaultSession;
+  if(!vaultActive(active)||!active.authorized){status.textContent='Primero conecta Obsidian y autoriza el acceso a la carpeta.';return}
+  if(active.busy){status.textContent='Hay un respaldo en curso. Reintenta cuando termine.';return}
+  if(!window.ObsidianContextBridge?.migrateLegacyNotes){status.textContent='No está disponible el organizador de notas.';return}
+  if(!confirm('Se crearán notas con títulos legibles y una copia .bak de cada archivo antiguo antes de retirar su nombre técnico del gráfico. No se borrarán los respaldos. ¿Organizar ahora?'))return;
+  try{
+   const result=await window.ObsidianContextBridge.migrateLegacyNotes(active.handle,ownerId,state.notes);
+   vaultStatus(active,'Obsidian: '+result.migrated+' notas antiguas organizadas, '+result.skipped+' sin coincidencia conservadas sin cambios. Los originales están respaldados en Respaldo de nombres anteriores.');
+  }catch(e){vaultStatus(active,'No se completó la organización: '+e.message+' Los originales sin procesar se conservaron.')}
+ },'secondary'));
  target.append(c);
 }
 
