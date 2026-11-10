@@ -46,6 +46,15 @@
   }
   async function canRead(vault){return !!(vault&&await vault.queryPermission({mode:"read"})==="granted");}
   async function canWrite(vault){return !!(vault&&await vault.queryPermission({mode:"readwrite"})==="granted");}
+  async function createIndexIfMissing(dir,name,content){
+    try{await dir.getFileHandle(name);return false;}
+    catch(e){if(e.name!=="NotFoundError")throw e;}
+    const file=await dir.getFileHandle(name,{create:true});
+    const writer=await file.createWritable();
+    try{await writer.write(content);await writer.close();}
+    catch(e){try{await writer.abort();}catch{}throw e;}
+    return true;
+  }
   async function writeOnce(dir,name,content){
     let file;
     try{
@@ -65,13 +74,13 @@
   function panelLink(owner){return "[[Oficinas IA/"+owner+"/Mapa - Oficinas IA|Mapa de oficinas IA]]";}
   async function ensureIndexes(vault,ownerId){
     const owner=validOwner(ownerId),root=await ownFolder(vault,owner,true);
-    await writeOnce(root,"Mapa - Oficinas IA.md",
+    await createIndexIfMissing(root,"Mapa - Oficinas IA.md",
       "# Mapa de Oficinas IA\n\nMemoria local de Emprendimiento IA.\n\n"+
       OFFICES.map(o=>"- "+officeLink(owner,o)).join("\n")+
       "\n\nLas conversaciones nuevas enlazan a su oficina y a este mapa. Los colores se configuran en la vista gráfica de Obsidian mediante grupos por carpeta.\n");
     for(const office of OFFICES){
       const dir=await root.getDirectoryHandle(office.folder,{create:true});
-      await writeOnce(dir,"Índice - "+office.folder+".md",
+      await createIndexIfMissing(dir,"Índice - "+office.folder+".md",
         "# "+office.folder+" · "+office.agent+"\n\nVolver a "+panelLink(owner)+
         "\n\nOficina: "+office.folder+"\n\nRevisa los vínculos de entrada para consultar las conversaciones y notas de esta oficina.\n");
     }
