@@ -9,7 +9,12 @@ const NEXUS_AUXILIARES = [
     nombre: "EXPLORER",
     cargo: "Investigador de productos",
     objetivo: "Investigar productos, mercados y proveedores.",
-    icono: "🔍"
+    icono: "🔍",
+    tendencias: {
+      seccion: "Tendencias de Internet",
+      botón: "Consultar tendencias",
+      resultados: []
+    }
   },
   {
     id: "analyst",
@@ -95,9 +100,99 @@ function mostrarPanel(auxiliar) {
   const objetivo = document.createElement("p");
   objetivo.textContent = "Objetivo: " + auxiliar.objetivo;
 
-  contenido.append(nombre, cargo, objetivo, cerrarModal);
+  const tendencias = document.createElement("div");
+  tendencias.className = "nexus-auxiliar-tendencias";
+
+  const seccion = document.createElement("h4");
+  seccion.textContent = auxiliar.tendencias.seccion;
+
+  const botón = document.createElement("button");
+  botón.textContent = auxiliar.tendencias.botón;
+  botón.addEventListener("click", async () => {
+    if (navigator.onLine) {
+      try {
+        const resultados = await obtenerTendencias(auxiliar.tendencias.seccion);
+        auxiliar.tendencias.resultados = resultados;
+        mostrarResultados(auxiliar);
+      } catch (error) {
+        mostrarError(auxiliar);
+      }
+    } else {
+      mostrarError(auxiliar);
+    }
+  });
+
+  tendencias.append(seccion, botón);
+  contenido.append(nombre, cargo, objetivo, tendencias);
+
   modal.appendChild(contenido);
   document.body.appendChild(modal);
+}
+
+async function obtenerTendencias(seccion) {
+  // Simulación de consulta a Google Trends
+  // En un entorno real, aquí deberías hacer una solicitud a una API de Google Trends o un servicio local
+  return [
+    {
+      nombre: "Producto 1",
+      fuente: "Google Trends",
+      fecha: "2023-04-01",
+      enlace: "https://trends.google.com/trends/explore?q=Producto+1"
+    },
+    {
+      nombre: "Producto 2",
+      fuente: "Google Trends",
+      fecha: "2023-04-01",
+      enlace: "https://trends.google.com/trends/explore?q=Producto+2"
+    }
+  ];
+}
+
+function mostrarResultados(auxiliar) {
+  const modal = document.querySelector(".nexus-auxiliar-modal");
+  const contenido = modal.querySelector(".nexus-auxiliar-modal-content");
+
+  contenido.innerHTML = `
+    <h3>${auxiliar.nombre}</h3>
+    <p>Cargo: ${auxiliar.cargo}</p>
+    <p>Objetivo: ${auxiliar.objetivo}</p>
+    <h4>Tendencias de Internet</h4>
+    <ul>
+      ${auxiliar.tendencias.resultados.map(result => `
+        <li>
+          <strong>${result.nombre}</strong>
+          <p>Fuente: ${result.fuente}</p>
+          <p>Fecha: ${result.fecha}</p>
+          <a href="${result.enlace}" target="_blank">Ver enlace</a>
+        </li>
+      `).join('')}
+    </ul>
+    <button id="volver">Volver a las suboficinas</button>
+  `;
+
+  const volver = document.getElementById("volver");
+  volver.addEventListener("click", () => {
+    document.body.removeChild(modal);
+  });
+}
+
+function mostrarError(auxiliar) {
+  const modal = document.querySelector(".nexus-auxiliar-modal");
+  const contenido = modal.querySelector(".nexus-auxiliar-modal-content");
+
+  contenido.innerHTML = `
+    <h3>${auxiliar.nombre}</h3>
+    <p>Cargo: ${auxiliar.cargo}</p>
+    <p>Objetivo: ${auxiliar.objetivo}</p>
+    <h4>Tendencias de Internet</h4>
+    <p>Fuente no conectada</p>
+    <button id="volver">Volver a las suboficinas</button>
+  `;
+
+  const volver = document.getElementById("volver");
+  volver.addEventListener("click", () => {
+    document.body.removeChild(modal);
+  });
 }
 
 // Estilos CSS
@@ -140,5 +235,32 @@ document.head.lastChild.textContent = `
     padding: 24px;
     border-radius: 8px;
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+  }
+
+  .nexus-auxiliar-tendencias {
+    margin-top: 24px;
+  }
+
+  .nexus-auxiliar-tendencias ul {
+    list-style-type: none;
+    padding: 0;
+  }
+
+  .nexus-auxiliar-tendencias li {
+    border-bottom: 1px solid #ccc;
+    padding: 12px 0;
+  }
+
+  .nexus-auxiliar-tendencias li:last-child {
+    border-bottom: none;
+  }
+
+  .nexus-auxiliar-tendencias a {
+    color: #007bff;
+    text-decoration: none;
+  }
+
+  .nexus-auxiliar-tendencias a:hover {
+    text-decoration: underline;
   }
 `;
