@@ -1,2 +1,0 @@
-# Emprendimiento-
-Drochipi Colombia 

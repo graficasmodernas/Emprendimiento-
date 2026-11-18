@@ -1,0 +1,7 @@
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+const assets={};
+for(const name of ['index.html','admin.css','obsidian-memory.js','nexus-auxiliares.js']) assets['/'+name]=await readFile('dist/'+name,'utf8');
+const backend=(await readFile('backend/shopify.mjs','utf8')).replace('export function createShopifyHandler','function createShopifyHandler').replace('export default {fetch:createShopifyHandler()};','');
+const wrapper=`\nconst assets=${JSON.stringify(assets)};\nconst verify=createShopifyHandler();\nexport default {async fetch(request,env){const url=new URL(request.url);if(url.pathname.startsWith('/api/')){if(!request.headers.get('oai-authenticated-user-id'))return reply(401,{error:'platform_sign_in_required'});return verify(request,env)}if(!['GET','HEAD'].includes(request.method))return reply(405,{error:'method_not_allowed'});const path=url.pathname==='/'?'/index.html':url.pathname;if(!(path in assets))return reply(404,{error:'not_found'});const type=path.endsWith('.html')?'text/html':path.endsWith('.css')?'text/css':'text/javascript';return new Response(request.method==='HEAD'?null:assets[path],{headers:{'Content-Type':type+'; charset=utf-8','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}})}};`;
+await mkdir('worker',{recursive:true});await writeFile('worker/index.mjs',backend+wrapper);await mkdir('dist/server',{recursive:true});await writeFile('dist/server/index.js',backend+wrapper);
+console.log('Worker prepared locally; hosting manifest unchanged; no secrets embedded.');
