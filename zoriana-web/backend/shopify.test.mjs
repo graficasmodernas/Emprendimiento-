@@ -15,7 +15,7 @@ const ENV = {
 const HEADERS = { Origin: ORIGIN, Authorization: 'Bearer fixture.session',
   'oai-authenticated-user-id': 'visitor-a' };
 
-function setup() {
+function setup(scope = 'read_orders,read_products') {
   let upstream;
   let owner = 'owner-a';
   const reads = [];
@@ -24,7 +24,7 @@ function setup() {
     if (url.includes('/rest/v1/')) return Response.json([{ user_id: owner }]);
     assert.equal(new URL(url).hostname, SHOP);
     if (url.endsWith('/oauth/access_token')) {
-      return Response.json({ access_token: TOKEN, scope: 'read_orders,read_products', expires_in: 1000 });
+      return Response.json({ access_token: TOKEN, scope, expires_in: 1000 });
     }
     assert.equal(options.redirect, 'manual');
     assert.equal(options.headers['X-Shopify-Access-Token'], TOKEN);
@@ -159,4 +159,13 @@ test('OAuth uses the existing administration origin and retains the legacy Sites
     method: 'POST', headers: { ...HEADERS, Origin: origin }
   }), env);
   assert.equal(response.status, 403);
+});
+
+test('OAuth accepts the chat proxy scope and rejects other extra or missing scopes', async () => {
+  await setup('write_app_proxy,read_orders,read_products').connect();
+  for (const scopes of ['read_products,write_app_proxy', 'read_orders,read_products,write_products']) {
+    const response = await setup(scopes).oauth();
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error, 'unexpected_scopes');
+  }
 });

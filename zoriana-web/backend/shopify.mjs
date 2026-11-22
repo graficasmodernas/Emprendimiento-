@@ -3,6 +3,7 @@ const ORIGIN='https://zoriana-vista-tienda.graficasmodernasas.chatgpt.site';
 const CUSTOM_ORIGIN='https://administracion.zoriana.shop';
 const SUPABASE='https://lfivgvovbrpkxwviullh.supabase.co';
 const SCOPES=['read_orders','read_products'];
+const ALLOWED_SCOPES=new Set([...SCOPES,'write_app_proxy']);
 const reply=(status,body)=>Response.json(body,{status,headers:{'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}});
 const MONEY_FIELDS = 'shopMoney { amount currencyCode }';
 const READ_QUERIES = {
@@ -108,7 +109,7 @@ export function createShopifyHandler(fetcher=(url,options)=>globalThis.fetch(url
  const response=await timedFetch('https://'+shop+'/admin/oauth/access_token',{method:'POST',redirect:'manual',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:env.SHOPIFY_CLIENT_ID,client_secret:env.SHOPIFY_CLIENT_SECRET,code:url.searchParams.get('code'),expiring:'1'})});
  if(!response.ok)return reply(502,{error:'token_exchange_failed'});
  const token=await response.json(),scopes=String(token.scope||'').split(',').map(x=>x.trim());
- if(!token.access_token||SCOPES.some(s=>!scopes.includes(s))||scopes.some(s=>!SCOPES.includes(s)))return reply(403,{error:'unexpected_scopes'});
+ if(!token.access_token||SCOPES.some(s=>!scopes.includes(s))||scopes.some(s=>!ALLOWED_SCOPES.has(s)))return reply(403,{error:'unexpected_scopes'});
  const seconds=Math.min(Number(token.expires_in)||3600,86400);if(!(seconds>0))return reply(502,{error:'invalid_expiry'});
  const sealed=await seal({token:token.access_token,owner:state.owner,visitor:identity,shop,exp:Date.now()+seconds*1000},env.SHOPIFY_CLIENT_SECRET,'connection');
  const headers=new Headers({'Location':origin+'/#inicio','Cache-Control':'no-store','Referrer-Policy':'no-referrer'});headers.append('Set-Cookie',setCookie('__Host-zoriana-connection',sealed,seconds));headers.append('Set-Cookie',setCookie('__Host-zoriana-state','',0));return new Response(null,{status:303,headers});
